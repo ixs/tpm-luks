@@ -113,36 +113,37 @@ trap cleanup EXIT
 OLD_IFS=${IFS}
 IFS=$'\n'
 TITLES=( $(cat $MENU | awk -F "\n" '$1 ~ /^[\W]*title/ { print $0 }' | sed 's/title//') )
-ROOTS=( $(cat $MENU | awk -F "\n" '$1 ~ /^\Wroot/ { print $0 }') )
-KERNELS=( $(cat ${MENU} | awk -F "\n" '$1 ~ /^\Wkernel/ { print $0 }') )
-INITRDS=( $(cat $MENU | awk -F "\n" '$1 ~ /^\Winitrd/ { print $0 }') )
+TITLELN=( $(cat $MENU | awk -F "\n" '$1 ~ /^[\W]*title/ { print NR }') $(($(cat $MENU | wc -l) + 1)) )
 DEFAULT=$(cat $MENU | awk -F= '$1 ~ /default/ { print $2 }')
 IFS=${OLD_IFS}
-
-NUM_ENTRIES=$(( ${#KERNELS[@]} - 1 ))
-KERNEL_FILES=
-INITRD_FILES=
-
-for e in $(seq 0 $NUM_ENTRIES); do
-	# save off the file names (required for PCR 14)
-	KERNEL_FILES[$e]="/boot$(echo ${KERNELS[$e]} | awk '{ print $2 }')"
-	INITRD_FILES[$e]="/boot$(echo ${INITRDS[$e]} | awk '{ print $2 }')"
-
-	# compute hashes of the strings themselves (required for PCR 12)
-	ROOTS[$e]=$(echo "${ROOTS[$e]}" | sed 's/^[ \t]*//' | tr -d "\n"|sha1sum | awk '{ print $1}')
-	KERNELS[$e]=$(echo "${KERNELS[$e]}" | sed 's/^[ \t]*//' | tr -d "\n"|sha1sum | awk '{ print $1}')
-	INITRDS[$e]=$(echo "${INITRDS[$e]}" | sed 's/^[ \t]*//' | tr -d "\n"|sha1sum | awk '{ print $1}')
-done
+NUM_ENTRIES=$(( ${#TITLES[@]} - 1 ))
 BOOT=$(echo -n "boot" | sha1sum | awk '{ print $1 }')
 
 #echo "Writing PCRs for \"$MENU\" boot entries:"
 for e in $(seq 0 $NUM_ENTRIES); do
-
-	if [ $e -ne $DEFAULT ]; then
+	if [ $(($e + 1)) -ne $DEFAULT ]; then
 		continue
 	fi
 
 	#echo -n "$e: \"${TITLES[$e]}\""
+
+	# Extract relevant segment of the menu file to work on
+	TEXT=$(cat $MENU | awk "NR==${TITLELN[$e]},NR==${TITLELN[$e+1]} - 1")
+
+	# save off the file names (required for PCR 14)
+	KERNEL_FILE="/boot$(echo "$TEXT" | awk -F "\n" '$1 ~ /^\Wkernel/ { print $0 }' | awk '{ print $2 }')"
+	INITRD_FILE=( $(echo "$TEXT" | awk -F "\n" '$1 ~ /^\Winitrd|module/ { print $0 }' | awk '{ print $2 }') )
+	for i in $(seq 0 $((${#INITRD_FILE[@]} - 1)) ); do
+		INITRD_FILE[$i]="/boot${INITRD_FILE[$i]}"
+	done
+
+	# compute hashes of the strings themselves (required for PCR 12)
+	ROOTS=$(echo "$TEXT" | awk -F "\n" '$1 ~ /^\Wroot/ { print $0 }' | sed 's/^[ \t]*//' | tr -d "\n"|sha1sum | awk '{ print $1}')
+	KERNELS=$(echo "$TEXT" | awk -F "\n" '$1 ~ /^\Wkernel/ { print $0 }' | sed 's/^[ \t]*//' | tr -d "\n"|sha1sum | awk '{ print $1}')
+        INITRDS=( $(echo "$TEXT" | awk -F "\n" '$1 ~ /^\Winitrd|module/ { print $0 }' | while read line; do
+		echo "$line" | sed 's/^[ \t]*//' | tr -d "\n" | sha1sum | awk '{ print $1}'
+	done) )
+
 	for PCRNUM in ${PCRS[@]}; do
 		AWK_STR="\$1 ~ /${PCRNUM}/ { print \$2 }"
 		MEASUREMENTS=$(cat $SOURCE | awk "$AWK_STR")
@@ -181,12 +182,12 @@ for e in $(seq 0 $NUM_ENTRIES); do
 			echo "r $PCRNUM $CURR_PCR" >> ${OUTFILE}
 			;;
 		12)
-			CURR_PCR=$(tpm-luks-chain-hashes -o $TMPFILE -h ${ROOTS[$e]} ${KERNELS[$e]} ${INITRDS[$e]} ${BOOT})
+			CURR_PCR=$(tpm-luks-chain-hashes -o $TMPFILE -h ${ROOTS} ${KERNELS} ${INITRDS[@]} ${BOOT})
 			echo "r $PCRNUM $CURR_PCR" >> ${OUTFILE}
 			#echo "w $PCRNUM $CURR_PCR"
 			;;
 		14)
-			CURR_PCR=$(tpm-luks-chain-hashes -o $TMPFILE ${KERNEL_FILES[$e]} ${INITRD_FILES[$e]})
+			CURR_PCR=$(tpm-luks-chain-hashes -o $TMPFILE ${KERNEL_FILE} ${INITRD_FILE[@]})
 			echo "r $PCRNUM $CURR_PCR" >> ${OUTFILE}
 			#echo "w $PCRNUM $CURR_PCR"
 			;;
