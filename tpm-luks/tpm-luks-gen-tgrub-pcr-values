@@ -121,7 +121,7 @@ BOOT=$(echo -n "boot" | sha1sum | awk '{ print $1 }')
 
 #echo "Writing PCRs for \"$MENU\" boot entries:"
 for e in $(seq 0 $NUM_ENTRIES); do
-	if [ $(($e + 1)) -ne $DEFAULT ]; then
+	if [ $e -ne $DEFAULT ]; then
 		continue
 	fi
 
